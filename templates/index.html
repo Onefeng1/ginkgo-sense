@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GinkgoSense - 白果智能识别系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f7fa; color: #333; }
+        .header { background: linear-gradient(135deg, #2d5016 0%, #4a7c23 100%); color: white; padding: 40px 20px; text-align: center; }
+        .header h1 { font-size: 2em; margin-bottom: 10px; }
+        .header p { opacity: 0.9; font-size: 1.1em; }
+        .container { max-width: 900px; margin: 30px auto; padding: 0 20px; }
+        .card { background: white; border-radius: 12px; padding: 30px; margin-bottom: 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+        .card h2 { color: #2d5016; margin-bottom: 20px; font-size: 1.3em; }
+        .upload-area { border: 2px dashed #ccc; border-radius: 12px; padding: 50px 20px; text-align: center; cursor: pointer; transition: all 0.3s; }
+        .upload-area:hover, .upload-area.dragover { border-color: #4a7c23; background: #f0f8e8; }
+        .upload-area p { color: #888; margin: 10px 0; }
+        .upload-area .icon { font-size: 3em; color: #4a7c23; }
+        input[type="file"] { display: none; }
+        .btn { display: inline-block; padding: 12px 30px; border: none; border-radius: 8px; cursor: pointer; font-size: 1em; transition: all 0.3s; }
+        .btn-primary { background: #4a7c23; color: white; }
+        .btn-primary:hover { background: #3d6a1e; }
+        .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+        .result-area { display: none; margin-top: 20px; }
+        .result-item { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #eee; }
+        .result-item:last-child { border-bottom: none; }
+        .result-label { font-weight: 500; }
+        .result-value { color: #4a7c23; font-weight: 600; }
+        .confidence-bar { height: 8px; background: #eee; border-radius: 4px; margin-top: 8px; overflow: hidden; }
+        .confidence-fill { height: 100%; background: #4a7c23; border-radius: 4px; transition: width 0.5s; }
+        .preview { max-width: 300px; max-height: 300px; margin: 15px auto; border-radius: 8px; display: none; }
+        .classes { display: flex; gap: 15px; margin-top: 15px; flex-wrap: wrap; }
+        .class-tag { padding: 8px 16px; border-radius: 20px; font-size: 0.9em; }
+        .tag-intact { background: #e8f5e9; color: #2e7d32; }
+        .tag-cracked { background: #fff3e0; color: #ef6c00; }
+        .tag-broken { background: #fce4ec; color: #c62828; }
+        .loading { display: none; text-align: center; padding: 20px; }
+        .loading .spinner { border: 3px solid #eee; border-top: 3px solid #4a7c23; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 0 auto 10px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .footer { text-align: center; padding: 30px; color: #999; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>GinkgoSense</h1>
+        <p>白果智能识别系统 - 基于深度学习的白果完整性检测</p>
+    </div>
+
+    <div class="container">
+        <div class="card">
+            <h2>上传白果图片</h2>
+            <div class="upload-area" id="dropZone" onclick="document.getElementById('fileInput').click()">
+                <div class="icon">&#127824;</div>
+                <p><strong>点击或拖拽图片到此处</strong></p>
+                <p>支持 PNG, JPG, BMP, WebP 格式，最大 16MB</p>
+            </div>
+            <input type="file" id="fileInput" accept="image/*">
+            <img class="preview" id="preview">
+            <div style="text-align: center; margin-top: 15px;">
+                <button class="btn btn-primary" id="predictBtn" onclick="predict()" disabled>开始识别</button>
+            </div>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>正在识别中...</p>
+        </div>
+
+        <div class="card result-area" id="resultArea">
+            <h2>识别结果</h2>
+            <div id="resultContent"></div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>GinkgoSense v1.0.0 | 白果破壳机结构设计与建模 - 郑俊锋</p>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const preview = document.getElementById('preview');
+        const predictBtn = document.getElementById('predictBtn');
+        let selectedFile = null;
+
+        dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+        dropZone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+        });
+
+        fileInput.addEventListener('change', e => { if (e.target.files.length) handleFile(e.target.files[0]); });
+
+        function handleFile(file) {
+            selectedFile = file;
+            const reader = new FileReader();
+            reader.onload = e => { preview.src = e.target.result; preview.style.display = 'block'; };
+            reader.readAsDataURL(file);
+            predictBtn.disabled = false;
+        }
+
+        function predict() {
+            if (!selectedFile) return;
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('resultArea').style.display = 'none';
+            predictBtn.disabled = true;
+
+            fetch('/predict', { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('loading').style.display = 'none';
+                    if (data.error) {
+                        alert(data.error);
+                        predictBtn.disabled = false;
+                        return;
+                    }
+                    showResult(data);
+                })
+                .catch(err => {
+                    document.getElementById('loading').style.display = 'none';
+                    alert('请求失败: ' + err);
+                    predictBtn.disabled = false;
+                });
+        }
+
+        function showResult(data) {
+            const tagClass = data.label === 'intact' ? 'tag-intact' : data.label === 'cracked' ? 'tag-cracked' : 'tag-broken';
+            let probHtml = '';
+            for (const [name, prob] of Object.entries(data.probabilities)) {
+                probHtml += `
+                    <div class="result-item">
+                        <span class="result-label">${name}</span>
+                        <span class="result-value">${(prob * 100).toFixed(1)}%</span>
+                    </div>
+                    <div class="confidence-bar"><div class="confidence-fill" style="width:${prob * 100}%"></div></div>`;
+            }
+            document.getElementById('resultContent').innerHTML = `
+                <div style="text-align:center;margin-bottom:15px;">
+                    <span class="class-tag ${tagClass}" style="font-size:1.2em;padding:12px 24px;">${data.label_cn}</span>
+                </div>
+                <div class="result-item">
+                    <span class="result-label">置信度</span>
+                    <span class="result-value">${(data.confidence * 100).toFixed(1)}%</span>
+                </div>
+                <div class="confidence-bar"><div class="confidence-fill" style="width:${data.confidence * 100}%"></div></div>
+                <hr style="margin:15px 0;border:none;border-top:1px solid #eee;">
+                <p style="font-weight:500;margin-bottom:10px;">各类别概率：</p>
+                ${probHtml}
+                <div class="result-item" style="margin-top:10px;">
+                    <span class="result-label">识别耗时</span>
+                    <span class="result-value">${data.elapsed_ms} ms</span>
+                </div>`;
+            document.getElementById('resultArea').style.display = 'block';
+            predictBtn.disabled = false;
+        }
+    </script>
+</body>
+</html>
