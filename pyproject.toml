@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "ginkgo-sense"
+version = "1.0.0"
+description = "基于深度学习的白果智能识别系统"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+authors = [
+    {name = "郑俊锋", email = "onefeng1@users.noreply.github.com"},
+]
+keywords = ["deep-learning", "computer-vision", "image-classification", "ginkgo", "agriculture"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/Onefeng1/ginkgo-sense"
+Documentation = "https://github.com/Onefeng1/ginkgo-sense/tree/main/docs"
+Repository = "https://github.com/Onefeng1/ginkgo-sense"
+Issues = "https://github.com/Onefeng1/ginkgo-sense/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "flake8>=6.0", "black>=23.0", "isort>=5.12"]
+export = ["onnx>=1.14", "onnxruntime>=1.15"]
+viz = ["matplotlib>=3.5", "scikit-learn>=1.2"]
+
+[tool.black]
+line-length = 120
+target-version = ["py38"]
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

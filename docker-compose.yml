@@ -1,0 +1,70 @@
+# ==========================================
+# GinkgoSense Docker Compose配置
+# ==========================================
+version: '3.8'
+
+services:
+  # Web应用服务
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ginkgo-sense
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./weights:/app/weights:ro
+      - ./data:/app/data:ro
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+      - ./results:/app/results
+    environment:
+      - FLASK_ENV=production
+      - MODEL_WEIGHTS=/app/weights/best_model.pth
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - ginkgo-net
+
+  # Nginx反向代理（可选）
+  nginx:
+    image: nginx:alpine
+    container_name: ginkgo-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - web
+    restart: unless-stopped
+    networks:
+      - ginkgo-net
+
+  # Redis缓存（可选，用于结果缓存）
+  redis:
+    image: redis:7-alpine
+    container_name: ginkgo-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    networks:
+      - ginkgo-net
+
+volumes:
+  redis-data:
+    driver: local
+
+networks:
+  ginkgo-net:
+    driver: bridge

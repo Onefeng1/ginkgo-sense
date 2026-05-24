@@ -1,0 +1,31 @@
+# GinkgoSense ResNet50 模型配置
+model:
+  model_type: resnet
+  backbone: resnet50
+  num_classes: 3
+  pretrained: true
+  use_cbam: true
+  dropout: 0.3
+
+# 输入配置
+input:
+  image_size: 224
+  channels: 3
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+# 类别定义
+classes:
+  names: ['intact', 'cracked', 'broken']
+  names_cn: ['完整果', '轻微裂纹', '严重破损']
+  mapping:
+    intact: 0
+    cracked: 1
+    broken: 2
+
+# 推理配置
+inference:
+  batch_size: 32
+  num_workers: 4
+  conf_threshold: 0.5
+  device: auto

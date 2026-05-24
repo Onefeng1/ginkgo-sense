@@ -1,0 +1,78 @@
+# GinkgoSense 训练配置
+# 完整的训练超参数和数据增强配置
+
+# 模型配置
+model:
+  model_type: resnet
+  backbone: resnet50
+  num_classes: 3
+  pretrained: true
+  use_cbam: true
+  dropout: 0.3
+
+# 训练超参数
+training:
+  batch_size: 32
+  learning_rate: 0.0001
+  min_lr: 1.0e-6
+  epochs: 50
+  weight_decay: 0.0001
+  optimizer: adam          # adam | sgd | adamw
+  lr_scheduler: cosine    # cosine | step | plateau
+  warmup_epochs: 5
+  early_stopping: 10
+  grad_clip: 1.0
+
+# 数据增强
+augmentation:
+  train:
+    resize: 256
+    crop: 224
+    horizontal_flip: 0.5
+    vertical_flip: 0.15
+    rotation: 30
+    color_jitter:
+      brightness: 0.3
+      contrast: 0.3
+      saturation: 0.15
+      hue: 0.06
+    grayscale: 0.05
+    gaussian_blur:
+      kernel: 3
+      sigma: [0.1, 1.0]
+    cutout:
+      probability: 0.2
+      scale: [0.02, 0.15]
+    random_erasing:
+      probability: 0.2
+  val:
+    resize: 256
+    crop: 224
+
+# 数据路径
+data:
+  train_dir: data/train
+  val_dir: data/val
+  test_dir: data/test
+  num_workers: 4
+  pin_memory: true
+
+# 混合精度训练
+amp:
+  enabled: true
+  dtype: float16
+
+# 日志配置
+logging:
+  log_dir: logs/training
+  save_every: 5
+  eval_every: 1
+  plot_curves: true
+
+# 保存配置
+checkpoint:
+  save_dir: weights
+  save_best: true
+  save_last: true
+  monitor: val_acc
+  mode: max

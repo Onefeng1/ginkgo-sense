@@ -1,178 +1,207 @@
 # -*- coding: utf-8 -*-
 """
-模型训练脚本
-白果图像分类模型训练与评估
+GinkgoSense 模型训练脚本
+支持多backbone选择、CBAM注意力、混合精度训练、Cosine学习率调度
 """
 import os
+import sys
+import time
 import argparse
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms, models
-from tqdm import tqdm
-import json
-import time
+from torchvision import datasets, transforms
 
-from config import MODEL_CONFIG, TRAIN_CONFIG, PREPROCESS_CONFIG
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-
-def get_data_loaders(data_dir, batch_size):
-    """构建数据加载器"""
-    train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(15),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
-        transforms.ToTensor(),
-        transforms.Normalize(PREPROCESS_CONFIG['mean'], PREPROCESS_CONFIG['std']),
-    ])
-
-    val_transform = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize(PREPROCESS_CONFIG['mean'], PREPROCESS_CONFIG['std']),
-    ])
-
-    train_dataset = datasets.ImageFolder(os.path.join(data_dir, 'train'), train_transform)
-    val_dataset = datasets.ImageFolder(os.path.join(data_dir, 'val'), val_transform)
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-
-    print(f"训练集: {len(train_dataset)} 张图片, {len(train_loader)} 批次")
-    print(f"验证集: {len(val_dataset)} 张图片, {len(val_loader)} 批次")
-    print(f"类别: {train_dataset.classes}")
-
-    return train_loader, val_loader
+from config import MODEL_CONFIG, TRAIN_CONFIG, PREPROCESS_CONFIG, DATA_DIR, WEIGHTS_DIR
+from model.arch import GinkgoResNet, build_model
+from model.evaluator import ClassificationEvaluator
+from utils.augment import GinkgoAugmentation
+from utils.logger import TrainingLogger
 
 
-def train_one_epoch(model, loader, criterion, optimizer, device):
-    """训练一个epoch"""
-    model.train()
-    total_loss = 0
-    correct = 0
-    total = 0
-
-    pbar = tqdm(loader, desc='Training')
-    for images, labels in pbar:
-        images, labels = images.to(device), labels.to(device)
-
-        optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        _, predicted = outputs.max(1)
-        total += labels.size(0)
-        correct += predicted.eq(labels).sum().item()
-
-        pbar.set_postfix({
-            'loss': f'{loss.item():.4f}',
-            'acc': f'{100. * correct / total:.2f}%'
-        })
-
-    return total_loss / len(loader), 100. * correct / total
-
-
-def validate(model, loader, criterion, device):
-    """验证"""
-    model.eval()
-    total_loss = 0
-    correct = 0
-    total = 0
-
-    with torch.no_grad():
-        for images, labels in loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-
-            total_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
-
-    return total_loss / len(loader), 100. * correct / total
-
-
-def main():
-    parser = argparse.ArgumentParser(description='白果图像分类模型训练')
-    parser.add_argument('--data_dir', type=str, default='data', help='数据目录')
+def get_args():
+    parser = argparse.ArgumentParser(description='GinkgoSense 训练')
+    parser.add_argument('--data_dir', type=str, default=DATA_DIR, help='数据目录')
+    parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet18', 'resnet34', 'resnet50', 'resnet101'])
+    parser.add_argument('--num_classes', type=int, default=3)
     parser.add_argument('--epochs', type=int, default=TRAIN_CONFIG['epochs'])
     parser.add_argument('--batch_size', type=int, default=TRAIN_CONFIG['batch_size'])
     parser.add_argument('--lr', type=float, default=TRAIN_CONFIG['learning_rate'])
-    parser.add_argument('--save_dir', type=str, default='weights', help='模型保存目录')
-    args = parser.parse_args()
+    parser.add_argument('--weight_decay', type=float, default=TRAIN_CONFIG['weight_decay'])
+    parser.add_argument('--use_cbam', action='store_true', default=True)
+    parser.add_argument('--no_cbam', action='store_true')
+    parser.add_argument('--pretrained', action='store_true', default=True)
+    parser.add_argument('--device', type=str, default=None)
+    parser.add_argument('--save_dir', type=str, default=WEIGHTS_DIR)
+    parser.add_argument('--log_dir', type=str, default='logs/training')
+    parser.add_argument('--early_stopping', type=int, default=TRAIN_CONFIG['early_stopping'])
+    parser.add_argument('--resume', type=str, default=None, help='恢复训练的权重路径')
+    return parser.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+def main():
+    args = get_args()
+    use_cbam = not args.no_cbam
+
+    # 设备
+    device = torch.device(args.device or ('cuda' if torch.cuda.is_available() else 'cpu'))
     print(f"使用设备: {device}")
 
-    # 数据
-    train_loader, val_loader = get_data_loaders(args.data_dir, args.batch_size)
+    # 日志
+    logger = TrainingLogger(log_dir=args.log_dir)
+    logger.log_config(vars(args))
+
+    # 数据增强
+    train_transform = GinkgoAugmentation(size=224, is_train=True)
+    val_transform = GinkgoAugmentation(size=224, is_train=False)
+
+    train_dir = os.path.join(args.data_dir, 'train')
+    val_dir = os.path.join(args.data_dir, 'val')
+
+    if os.path.exists(train_dir):
+        train_dataset = datasets.ImageFolder(train_dir, transform=train_transform.transform)
+        val_dataset = datasets.ImageFolder(val_dir, transform=val_transform.transform)
+    else:
+        print(f"警告: 未找到数据目录 {train_dir}，使用FakeData演示")
+        train_dataset = datasets.FakeData(size=200, image_size=(3, 224, 224), num_classes=args.num_classes, transform=train_transform.transform)
+        val_dataset = datasets.FakeData(size=50, image_size=(3, 224, 224), num_classes=args.num_classes, transform=val_transform.transform)
+
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
     # 模型
-    model = models.resnet50(pretrained=True)
-    num_features = model.fc.in_features
-    model.fc = nn.Sequential(
-        nn.Dropout(0.3),
-        nn.Linear(num_features, 256),
-        nn.ReLU(),
-        nn.Dropout(0.2),
-        nn.Linear(256, MODEL_CONFIG['num_classes']),
-    )
+    config = {
+        'model_type': 'resnet',
+        'backbone': args.backbone,
+        'num_classes': args.num_classes,
+        'pretrained': args.pretrained,
+        'use_cbam': use_cbam,
+    }
+    model = build_model(config)
     model.to(device)
 
-    # 损失函数和优化器
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=TRAIN_CONFIG['weight_decay'])
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    params = sum(p.numel() for p in model.parameters())
+    print(f"模型参数量: {params:,}")
 
-    # 创建保存目录
-    os.makedirs(args.save_dir, exist_ok=True)
+    # 恢复训练
+    start_epoch = 0
+    best_val_acc = 0.0
+    if args.resume and os.path.exists(args.resume):
+        ckpt = torch.load(args.resume, map_location=device)
+        model.load_state_dict(ckpt.get('model_state_dict', ckpt))
+        start_epoch = ckpt.get('epoch', 0)
+        best_val_acc = ckpt.get('best_val_acc', 0.0)
+        print(f"恢复训练: epoch={start_epoch}, best_acc={best_val_acc:.4f}")
+
+    # 优化器
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    # 学习率调度
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
+
+    # 损失函数
+    criterion = nn.CrossEntropyLoss()
+
+    # 混合精度
+    use_amp = device.type == 'cuda'
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     # 训练循环
-    best_acc = 0
-    history = []
+    patience_counter = 0
+    os.makedirs(args.save_dir, exist_ok=True)
 
-    print(f"\n开始训练，共 {args.epochs} 个epoch")
-    print("=" * 60)
+    print(f"\n开始训练: {args.epochs} epochs, batch_size={args.batch_size}, lr={args.lr}")
+    print("=" * 70)
 
-    for epoch in range(args.epochs):
-        print(f"\nEpoch {epoch + 1}/{args.epochs}")
-        print("-" * 40)
+    for epoch in range(start_epoch, args.epochs):
+        model.train()
+        train_loss = 0.0
+        train_correct = 0
+        train_total = 0
 
-        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss, val_acc = validate(model, val_loader, criterion, device)
+        for batch_idx, (images, labels) in enumerate(train_loader):
+            images, labels = images.to(device), labels.to(device)
+
+            optimizer.zero_grad()
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+
+            train_loss += loss.item() * images.size(0)
+            _, predicted = torch.max(outputs, 1)
+            train_correct += (predicted == labels).sum().item()
+            train_total += labels.size(0)
+
+        train_loss /= train_total
+        train_acc = train_correct / train_total
+
+        # 验证
+        model.eval()
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+
+        with torch.no_grad():
+            for images, labels in val_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item() * images.size(0)
+                _, predicted = torch.max(outputs, 1)
+                val_correct += (predicted == labels).sum().item()
+                val_total += labels.size(0)
+
+        val_loss /= val_total
+        val_acc = val_correct / val_total
+        current_lr = scheduler.get_last_lr()[0]
         scheduler.step()
 
-        print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
-        print(f"Val Loss:   {val_loss:.4f} | Val Acc:   {val_acc:.2f}%")
-
-        history.append({
-            'epoch': epoch + 1,
-            'train_loss': train_loss,
-            'train_acc': train_acc,
-            'val_loss': val_loss,
-            'val_acc': val_acc,
-        })
+        # 日志
+        logger.log_epoch(epoch + 1, train_loss, val_loss, train_acc, val_acc, current_lr)
 
         # 保存最佳模型
-        if val_acc > best_acc:
-            best_acc = val_acc
-            torch.save(model.state_dict(), os.path.join(args.save_dir, 'best_model.pth'))
-            print(f"  -> 保存最佳模型 (Acc: {val_acc:.2f}%)")
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            patience_counter = 0
+            save_path = os.path.join(args.save_dir, 'best_model.pth')
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_val_acc': best_val_acc,
+                'config': config,
+            }, save_path)
+            print(f"  ✓ 保存最佳模型: {save_path} (acc={val_acc:.4f})")
+        else:
+            patience_counter += 1
+
+        # 保存最新模型
+        if (epoch + 1) % 5 == 0:
+            save_path = os.path.join(args.save_dir, f'checkpoint_epoch{epoch+1}.pth')
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_val_acc': best_val_acc,
+            }, save_path)
+
+        # 早停
+        if patience_counter >= args.early_stopping:
+            print(f"\n早停: {args.early_stopping} 个epoch无提升")
+            break
 
     # 保存训练历史
-    with open(os.path.join(args.save_dir, 'history.json'), 'w') as f:
-        json.dump(history, f, indent=2)
-
-    print("\n" + "=" * 60)
-    print(f"训练完成! 最佳验证准确率: {best_acc:.2f}%")
-    print(f"模型已保存至: {args.save_dir}/best_model.pth")
+    logger.save_history()
+    print(f"\n训练完成! 最佳验证准确率: {best_val_acc:.4f}")
+    print(f"模型权重保存在: {args.save_dir}")
 
 
 if __name__ == '__main__':

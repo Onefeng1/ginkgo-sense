@@ -1,0 +1,49 @@
+# ==========================================
+# GinkgoSense 自动部署Pipeline
+# ==========================================
+name: Deploy
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            cd /opt/ginkgo-sense
+            docker compose pull
+            docker compose up -d --force-recreate
+            docker system prune -f
+            echo "Deployed ${{ github.ref_name }}"
+
+      - name: Notify
+        if: success()
+        run: |
+          echo "✅ Successfully deployed ${{ github.ref_name }}"
